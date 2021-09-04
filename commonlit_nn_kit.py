@@ -35,6 +35,25 @@ class UnoTextDataset(Dataset):
                   'target': self.targets[idx]}
         return sample
 
+class DuoTextDataset(Dataset):
+    """
+    If the first input is easier to read then the target is 1
+    If the second input is easier to read then the target is -1
+    """
+    def __init__(self, text_excerpts_left, text_excerpts_right, targets):
+        self.text_excerpts_left = text_excerpts_left
+        self.text_excerpts_right = text_excerpts_right
+        self.targets = targets
+        
+    def __len__(self):
+        return len(self.targets)
+    
+    def __getitem__(self, idx):
+        sample = {'text_excerpt_left': self.text_excerpts_left[idx],
+                  'text_excerpt_right': self.text_excerpts_right[idx],
+                  'target': self.targets[idx]}
+        return sample
+
 def create_uno_text_dataloader(data, batch_size, shuffle, sampler, apply_preprocessing=True, num_workers=4, pin_memory=True, drop_last=False):
     # Preprocessing
     if apply_preprocessing:
@@ -44,6 +63,26 @@ def create_uno_text_dataloader(data, batch_size, shuffle, sampler, apply_preproc
     text_excerpts = data['excerpt'].tolist()
     targets = data['target'].to_numpy().astype(np.float32).reshape(-1, 1)
     dataset = UnoTextDataset(text_excerpts=text_excerpts, targets=targets)
+    dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=shuffle, sampler=sampler,
+                            num_workers=num_workers, pin_memory=pin_memory, drop_last=drop_last)
+    return dataloader
+
+def create_duo_text_dataloader(data, batch_size, shuffle, sampler, apply_preprocessing=True, num_workers=4, pin_memory=True, drop_last=False):
+    if apply_preprocessing:
+        data['easy_text'] = data['easy_text'].apply(lambda x: x.replace('\n', ' '))
+        data['easy_text'] = data['easy_text'].apply(lambda x: ' '.join(x.split()))
+
+        data['difficult_text'] = data['difficult_text'].apply(lambda x: x.replace('\n', ' '))
+        data['difficult_text'] = data['difficult_text'].apply(lambda x: ' '.join(x.split()))
+    
+    text_excerpts_left = data['easy_text'].tolist()
+    text_excerpts_right = data['difficult_text'].tolist()
+    targets = len(data) * [1]
+    targets = np.asarray(targets).astype(np.float32).reshape(-1, 1)
+
+    dataset = DuoTextDataset(text_excerpts_left=text_excerpts_left,
+                             text_excerpts_right=text_excerpts_right,
+                             targets=targets)
     dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=shuffle, sampler=sampler,
                             num_workers=num_workers, pin_memory=pin_memory, drop_last=drop_last)
     return dataloader
@@ -502,6 +541,21 @@ def compute_rmse_loss(outputs, targets, device, **kwargs):
     predictions = outputs['predictions']
     targets = targets.to(device)
     loss = torch.sqrt(mse_loss_fn(predictions, targets))
+    return loss
+
+
+ranking_loss_fn = nn.MarginRankingLoss()
+
+def compute_ranking_loss(outputs, targets, device, **kwargs):
+    predictions_left = outputs['predictions_left']
+    predictions_right = outputs['predictions_right']
+    targets = targets.to(device)
+    
+    predictions_left = predictions_left.reshape(len(predictions_left))
+    predictions_right = predictions_right.reshape(len(predictions_right))
+    targets = targets.reshape(len(targets))
+    
+    loss = ranking_loss_fn(predictions_left, predictions_right, targets)
     return loss
 
 def compute_rmse_score(outputs, targets, **kwargs):
